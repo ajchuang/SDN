@@ -1,0 +1,94 @@
+<project name="SDN: Homework 1" default="compile" basedir=".">
+    <tstamp/>
+    <property name="src" location="src" />
+    <property name="build" location="build" />
+    <property name="build-test" location="build-test" />
+    <property name="lib" location="lib" />
+    <property name="tool" location="tool" />
+    <property name="target" location="target" />
+    <property name="resources" location="resources" />
+
+    <target name="compile-test" depends="compile" description="Compile the Hw1SwitchTest.java file">
+        <mkdir dir="${build-test}" />
+        <javac includeAntRuntime="false" debug="true"
+           srcdir="${src}/test"
+           destdir="${build-test}">
+            <compilerarg value="-Xlint:unchecked"/>
+            <classpath>
+                <pathelement path="${classpath}"/>
+                <fileset dir="${target}">
+                    <include name="**/*.jar"/>
+                </fileset>
+                <fileset dir="${lib}">
+                    <include name="**/*.jar"/>
+                </fileset>
+            </classpath>
+        </javac>
+    </target>
+
+    <target name="compile" depends="" description="Compile the Hw1Switch.java file">
+        <mkdir dir="${build}" />
+        <mkdir dir="${build}/META-INF" />
+	<copy todir="${build}/META-INF">
+            <fileset dir="${resources}/META-INF" />
+        </copy>
+        <javac srcdir="${src}/main" destdir="${build}" debug="on" debuglevel="lines,vars,source" includeantruntime="false">
+            <compilerarg value="-Xlint:unchecked"/>
+            <classpath>
+                <pathelement path="${classpath}"/>
+                <fileset dir="${lib}">
+                    <include name="**/*.jar"/>
+                </fileset>
+            </classpath>
+        </javac>
+
+        <mkdir dir="${target}" />
+        <jar jarfile="${target}/hw1.jar">
+            <fileset dir="${build}/" />
+        </jar>
+    </target>
+
+    <target name="test" depends="compile-test">
+        <junit fork="true" forkmode="once"
+           failureproperty="junit.failure"
+           printsummary="on">
+        <sysproperty key="net.sourceforge.cobertura.datafile"
+             file="${target}/cobertura.ser" />
+            <classpath>
+                <pathelement path="${classpath}"/>
+                <pathelement path="${build-test}"/>
+                <fileset dir="${target}">
+                    <include name="**/*.jar"/>
+                </fileset>
+                <fileset dir="${lib}">
+                    <include name="**/*.jar"/>
+                </fileset>
+            </classpath>
+            <formatter type="brief" usefile="true" />
+            <batchtest todir="${build-test}">
+                <fileset dir="${src}/test">
+                    <exclude name="**/storage/tests/StorageTest.java"/>
+                                    <include name="**/*Test*.java"/>
+                    <exclude name="**/core/test/**"/>
+                    <exclude name="**/core/module/**"/>
+                </fileset>
+            </batchtest>
+        </junit>
+        <fail if="junit.failure" message="Unit test(s) failed.  See reports!"/>
+    </target>
+
+
+    <taskdef resource="checkstyletask.properties" classpath="${tool}/checkstyle-5.5-all.jar" />
+    <target name="checkstyle" description="Generates a report of code convention violations.">
+      <checkstyle config="${tool}/sun_checks.xml">
+        <fileset dir="${src}/main" includes="**/*.java" />
+        <formatter type="plain"/>
+      </checkstyle>
+    </target>
+
+    <target name="clean" description="clean">
+        <delete dir="${build}" />
+        <delete dir="${target}" />
+        <delete dir="${build-test}" />
+    </target>
+</project>
