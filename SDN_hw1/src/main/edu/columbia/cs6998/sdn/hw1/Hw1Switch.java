@@ -3,7 +3,7 @@
 *    Homework 1, COMS E6998-10 Fall 2014
 *    Software Defined Networking
 *    Originally created by Shangjin Zhang, Columbia University
-* 
+*
 *    Licensed under the Apache License, Version 2.0 (the "License"); you may
 *    not use this file except in compliance with the License. You may obtain
 *    a copy of the License at
@@ -68,22 +68,19 @@ import org.openflow.util.LRULinkedHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class Hw1Switch 
-    implements IFloodlightModule, IOFMessageListener {
-    protected static Logger log = LoggerFactory.getLogger(Hw1Switch.class);
-    
+public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
+
+    protected static Logger log = LoggerFactory.getLogger (Hw1Switch.class);
+
     // Module dependencies
     protected IFloodlightProviderService floodlightProvider;
-    
+
     // Stores the learned state for each switch: for each switch, we store <MAC addr, port>
     protected Map<IOFSwitch, Map<Long, Short>> macToSwitchPortMap;
 
-/* CS6998: data structures for the firewall feature
+    // CS6998: data structures for the firewall feature
     // Stores the MAC address of hosts to block: <Macaddr, blockedTime>
     protected Map<Long, Long> blacklist;
-
-    ...more
-*/
 
     // flow-mod - for use in the cookie
     public static final int HW1_SWITCH_APP_ID = 10;
@@ -91,15 +88,16 @@ public class Hw1Switch
     // the app cookie management
     public static final int APP_ID_BITS = 12;
     public static final int APP_ID_SHIFT = (64 - APP_ID_BITS);
-    public static final long HW1_SWITCH_COOKIE = (long) (HW1_SWITCH_APP_ID & ((1 << APP_ID_BITS) - 1)) << APP_ID_SHIFT;
-    
-    // more flow-mod defaults 
+    public static final long HW1_SWITCH_COOKIE =
+        (long) (HW1_SWITCH_APP_ID & ((1 << APP_ID_BITS) - 1)) << APP_ID_SHIFT;
+
+    // more flow-mod defaults
     protected static final short IDLE_TIMEOUT_DEFAULT = 10;
     protected static final short HARD_TIMEOUT_DEFAULT = 0;
     protected static final short PRIORITY_DEFAULT = 100;
-    
+
     // for managing our map sizes
-    protected static final int MAX_MACS_PER_SWITCH  = 1000;    
+    protected static final int MAX_MACS_PER_SWITCH  = 1000;
 
     // maxinum allowed elephant flow number for one switch
     protected static final int MAX_ELEPHANT_FLOW_NUMBER = 1;
@@ -112,13 +110,14 @@ public class Hw1Switch
 
     // time duration the firewall will block each node for
     protected static final int FIREWALL_BLOCK_TIME_DUR = (10 * 1000);
+
     /**
      * @param floodlightProvider the floodlightProvider to set
      */
-    public void setFloodlightProvider(IFloodlightProviderService floodlightProvider) {
-        this.floodlightProvider = floodlightProvider;
+    public void setFloodlightProvider (IFloodlightProviderService a_floodlightProvider) {
+        this.floodlightProvider = a_floodlightProvider;
     }
-    
+
     @Override
     public String getName() {
         return "hw1switch";
@@ -131,9 +130,9 @@ public class Hw1Switch
      * @param portVal The switchport that the host is on
      */
     protected void addToPortMap (IOFSwitch sw, long mac, short portVal) {
-        
-	Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
-        
+
+        Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
+
         if (swMap == null) {
             // May be accessed by REST API so we need to make it thread safe
             swMap = Collections.synchronizedMap (new LRULinkedHashMap<Long, Short>(MAX_MACS_PER_SWITCH));
@@ -142,7 +141,7 @@ public class Hw1Switch
 
         swMap.put (Long.valueOf (mac), Short.valueOf (portVal));
     }
-    
+
     /**
      * Removes a host from the MAC->SwitchPort mapping
      * @param sw The switch to remove the mapping from
@@ -151,12 +150,13 @@ public class Hw1Switch
     protected void removeFromPortMap (IOFSwitch sw, long mac) {
 
         Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
-        
-	if (swMap != null)
-	    if (swMap.get (Long.valueOf (mac)) != null)
-            	swMap.remove (sw);
+
+        if (swMap != null) {
+            if (swMap.get (Long.valueOf (mac)) != null) {
+            	swMap.remove (Long.valueOf (mac));
+            }
+        }
 	}
-    }
 
     /**
      * Get the port that a MAC is associated with
@@ -164,15 +164,16 @@ public class Hw1Switch
      * @param mac The MAC address to get
      * @return The port the host is on
      */
-    public Short getFromPortMap(IOFSwitch sw, long mac) {
-    	Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
-	
-	if (swMap != null)
-		return swMap.get (Long.valueOf (mac));
-	else
-		return null;
+    public Short getFromPortMap (IOFSwitch sw, long mac) {
+
+        Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
+
+        if (swMap != null)
+            return swMap.get (Long.valueOf (mac));
+        else
+            return null;
     }
-    
+
     /**
      * Writes a OFFlowMod to a switch.
      * @param sw The switch to write the flowmod to.
@@ -182,10 +183,10 @@ public class Hw1Switch
      * @param outPort The switch port to output it to.
      */
     private void writeFlowMod (
-		    IOFSwitch sw, 
-		    short command, 
+		    IOFSwitch sw,
+		    short command,
 		    int bufferId,
-		    OFMatch match, 
+		    OFMatch match,
 		    short outPort) {
         // from openflow 1.0 spec - need to set these on a struct ofp_flow_mod:
         // struct ofp_flow_mod {
@@ -232,7 +233,7 @@ public class Hw1Switch
         flowMod.setLength((short) (OFFlowMod.MINIMUM_LENGTH + OFActionOutput.MINIMUM_LENGTH));
 
         if (log.isTraceEnabled()) {
-            log.trace("{} {} flow mod {}", 
+            log.trace("{} {} flow mod {}",
                       new Object[] { sw, (command == OFFlowMod.OFPFC_DELETE) ? "deleting" : "adding", flowMod });
         }
 
@@ -250,9 +251,10 @@ public class Hw1Switch
      * @param packetInMessage The corresponding PacketIn.
      * @param egressPort The switchport to output the PacketOut.
      */
-    private void writePacketOutForPacketIn(IOFSwitch sw, 
-                                          OFPacketIn packetInMessage, 
-                                          short egressPort) {
+    private void writePacketOutForPacketIn (
+        IOFSwitch sw,
+        OFPacketIn packetInMessage,
+        short egressPort) {
 
         // from openflow 1.0 spec - need to set these on a struct ofp_packet_out:
         // uint32_t buffer_id; /* ID assigned by datapath (-1 if none). */
@@ -262,7 +264,7 @@ public class Hw1Switch
         /* uint8_t data[0]; */ /* Packet data. The length is inferred
                                   from the length field in the header.
                                   (Only meaningful if buffer_id == -1.) */
-        
+
         OFPacketOut packetOutMessage = (OFPacketOut) floodlightProvider.getOFMessageFactory().getMessage(OFType.PACKET_OUT);
         short packetOutLength = (short) OFPacketOut.MINIMUM_LENGTH; // starting length
 
@@ -271,22 +273,22 @@ public class Hw1Switch
         packetOutMessage.setInPort(packetInMessage.getInPort());
         packetOutMessage.setActionsLength((short) OFActionOutput.MINIMUM_LENGTH);
         packetOutLength += OFActionOutput.MINIMUM_LENGTH;
-        
+
         // set actions
-        List<OFAction> actions = new ArrayList<OFAction>(1);      
+        List<OFAction> actions = new ArrayList<OFAction>(1);
         actions.add(new OFActionOutput(egressPort, (short) 0));
         packetOutMessage.setActions(actions);
 
         // set data - only if buffer_id == -1
         if (packetInMessage.getBufferId() == OFPacketOut.BUFFER_ID_NONE) {
             byte[] packetData = packetInMessage.getPacketData();
-            packetOutMessage.setPacketData(packetData); 
+            packetOutMessage.setPacketData(packetData);
             packetOutLength += (short) packetData.length;
         }
-        
+
         // finally, set the total length
-        packetOutMessage.setLength(packetOutLength);              
-            
+        packetOutMessage.setLength(packetOutLength);
+
         // and write it out
         try {
             sw.write(packetOutMessage, null);
@@ -294,10 +296,10 @@ public class Hw1Switch
             log.error("Failed to write {} to switch {}: {}", new Object[] { packetOutMessage, sw, e });
         }
     }
-    
+
     /**
      * Processes a OFPacketIn message. If the switch has learned the MAC to port mapping
-     * for the pair it will write a FlowMod for. If the mapping has not been learned the 
+     * for the pair it will write a FlowMod for. If the mapping has not been learned the
      * we will flood the packet.
      * @param sw
      * @param pi
@@ -305,28 +307,31 @@ public class Hw1Switch
      * @return
      */
     private Command processPacketInMessage (
-	IOFSwitch sw, 
-	OFPacketIn pi, 
-	FloodlightContext cntx) {
+        IOFSwitch sw,
+        OFPacketIn pi,
+        FloodlightContext cntx) {
 
         // Read in packet data headers by using OFMatch
-	Short inPort = Short.valueOf (pi.getInPort ());
-        OFMatch match = new OFMatch();
-        match.loadFromPacket (pi.getPacketData(), inPort.shortValue ());
-        Long sourceMac = Ethernet.toLong(match.getDataLayerSource());
-        Long destMac = Ethernet.toLong(match.getDataLayerDestination());
+        Short inPort = Short.valueOf (pi.getInPort ());
+        OFMatch match = new OFMatch ();
+        match.loadFromPacket (pi.getPacketData (), inPort.shortValue ());
+        Long sourceMac = Ethernet.toLong (match.getDataLayerSource ());
+        Long destMac = Ethernet.toLong (match.getDataLayerDestination ());
 
-	Map swMap = macToSwitchPortMap.get (sw); 
+        log.trace ("packet in :" + sourceMac.toString () + ":" + destMac.toString ());
 
-	/* implement LEARNING SWITCH */
-	if (swMap == null) { 
+         Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
+
+        /* implement LEARNING SWITCH */
+        if (swMap == null) {
             swMap = Collections.synchronizedMap (new LRULinkedHashMap<Long, Short>(MAX_MACS_PER_SWITCH));
             macToSwitchPortMap.put (sw, swMap);
-	}
+        }
 
-	if (swMap.get (sourceMac) == null) {
-	    swMap.put (sourceMac, inPort); 
-	}
+        /* insert the map entry for incoming port */
+        if (swMap.get (sourceMac) == null) {
+            swMap.put (sourceMac, inPort);
+        }
 
 /* CS6998: Do works here to implement super firewall
         Hint: You may check connection limitation here.
@@ -340,69 +345,71 @@ public class Hw1Switch
             return Command.CONTINUE;
 */
 
-/* CS6998: Ask the switch to flood the packet to all of its ports
- *         Thus, this module currently works as a dummy hub
- */
-        this.writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
-
 // CS6998: Ask the switch to flood the packet to all of its ports
         // Now output flow-mod and/or packet
         // CS6998: Fill out the following ???? to obtain outPort
-        Short outPort = macToSwitchPortMap.get (sw).get (destMac);
+
+
+        Short outPort = swMap.get (destMac);
 
         if (outPort == null) {
-            // If we haven't learned the port for the dest MAC, flood it
-            // CS6998: Fill out the following ????
-            this.writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
+            /* flodding - we dont know where to forward the packet. */
+            writePacketOutForPacketIn (sw, pi, OFPort.OFPP_FLOOD.getValue ());
+
         } else if (outPort == match.getInputPort()) {
+
             log.trace("ignoring packet that arrived on same port as learned destination:"
                     + " switch {} dest MAC {} port {}",
                     new Object[]{ sw, HexString.toHexString(destMac), outPort });
+
         } else {
-            // Add flow table entry matching source MAC, dest MAC and input port
-            // that sends to the port we previously learned for the dest MAC.
-            match.setWildcards(((Integer)sw.getAttribute(IOFSwitch.PROP_FASTWILDCARDS)).intValue()
+
+            match.setWildcards (((Integer)sw.getAttribute(IOFSwitch.PROP_FASTWILDCARDS)).intValue()
                     & ~OFMatch.OFPFW_IN_PORT
                     & ~OFMatch.OFPFW_DL_SRC & ~OFMatch.OFPFW_DL_DST
                     & ~OFMatch.OFPFW_NW_SRC_MASK & ~OFMatch.OFPFW_NW_DST_MASK);
-            // CS6998: Fill out the following ????
-            this.writeFlowMod(sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort.shortValue ());
+
+            /* send to the correct port */
+            writeFlowMod (sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort.shortValue ());
         }
-        
-	return Command.CONTINUE;
+
+        return Command.CONTINUE;
     }
 
     /**
-     * Processes a flow removed message. 
+     * Processes a flow removed message.
      * @param sw The switch that sent the flow removed message.
      * @param flowRemovedMessage The flow removed message.
      * @return Whether to continue processing this message or stop.
      */
-    private Command processFlowRemovedMessage(IOFSwitch sw, OFFlowRemoved flowRemovedMessage) {
-        
-	if (flowRemovedMessage.getCookie() != Hw1Switch.HW1_SWITCH_COOKIE) {
+    private Command processFlowRemovedMessage (
+        IOFSwitch sw,
+        OFFlowRemoved flowRemovedMessage) {
+
+        if (flowRemovedMessage.getCookie () != Hw1Switch.HW1_SWITCH_COOKIE)
             return Command.CONTINUE;
-        }
 
-        Long sourceMac = Ethernet.toLong(flowRemovedMessage.getMatch().getDataLayerSource());
-        Long destMac = Ethernet.toLong(flowRemovedMessage.getMatch().getDataLayerDestination());
+        Long sourceMac = Ethernet.toLong (flowRemovedMessage.getMatch().getDataLayerSource());
+        Long destMac = Ethernet.toLong (flowRemovedMessage.getMatch().getDataLayerDestination());
 
-        if (log.isTraceEnabled()) {
-            log.trace("{} flow entry removed {}", sw, flowRemovedMessage);
-        }
+        if (log.isTraceEnabled ())
+            log.trace ("{} flow entry removed {}", sw, flowRemovedMessage);
 
         // CS6998: Do works here to implement super firewall
         //  Hint: You may detect Elephant Flow here.
         //  ....
         //
-        
+
         return Command.CONTINUE;
     }
 
     // IOFMessageListener
-    
     @Override
-    public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
+    public Command receive (
+        IOFSwitch sw,
+        OFMessage msg,
+        FloodlightContext cntx) {
+
         switch (msg.getType()) {
             case PACKET_IN:
                 return this.processPacketInMessage(sw, (OFPacketIn) msg, cntx);
@@ -411,12 +418,15 @@ public class Hw1Switch
                 return this.processFlowRemovedMessage(sw, (OFFlowRemoved) msg);
             */
             case ERROR:
-                log.info("received an error {} from switch {}", (OFError) msg, sw);
+                log.info ("received an error {} from switch {}", (OFError) msg, sw);
                 return Command.CONTINUE;
+
             default:
+                log.error ("received an unexpected message {} from switch {}", msg, sw);
                 break;
         }
-        log.error("received an unexpected message {} from switch {}", msg, sw);
+
+
         return Command.CONTINUE;
     }
 
@@ -431,43 +441,45 @@ public class Hw1Switch
     }
 
     // IFloodlightModule
-    
+
     @Override
     public Collection<Class<? extends IFloodlightService>> getModuleServices() {
-        Collection<Class<? extends IFloodlightService>> l = 
+
+        Collection<Class<? extends IFloodlightService>> l =
                 new ArrayList<Class<? extends IFloodlightService>>();
         return l;
+
     }
 
     @Override
-    public Map<Class<? extends IFloodlightService>, IFloodlightService>
-            getServiceImpls() {
-        Map<Class<? extends IFloodlightService>,
-            IFloodlightService> m = 
-                new HashMap<Class<? extends IFloodlightService>,
-                    IFloodlightService>();
+    public Map<Class<? extends IFloodlightService>, IFloodlightService> getServiceImpls() {
+
+        Map<Class<? extends IFloodlightService>, IFloodlightService> m =
+            new HashMap<Class<? extends IFloodlightService>, IFloodlightService> ();
+
         return m;
     }
 
     @Override
-    public Collection<Class<? extends IFloodlightService>>
-            getModuleDependencies() {
-        Collection<Class<? extends IFloodlightService>> l = 
-                new ArrayList<Class<? extends IFloodlightService>>();
-        l.add(IFloodlightProviderService.class);
+    public Collection<Class<? extends IFloodlightService>> getModuleDependencies() {
+
+        Collection<Class<? extends IFloodlightService>> l =
+            new ArrayList<Class<? extends IFloodlightService>> ();
+
+        l.add (IFloodlightProviderService.class);
         return l;
     }
 
     @Override
-    public void init(FloodlightModuleContext context)
-            throws FloodlightModuleException {
+    public void init(FloodlightModuleContext context) throws FloodlightModuleException {
+
         floodlightProvider =
-                context.getServiceImpl(IFloodlightProviderService.class);
-        
-	/* instantiate the port map */
-	macToSwitchPortMap = new ConcurrentHashMap<IOFSwitch, Map<Long, Short>>();
-        
-	//blacklist = new HashMap<Long, Long>();
+                context.getServiceImpl (IFloodlightProviderService.class);
+
+        /* instantiate the port map */
+        macToSwitchPortMap = new ConcurrentHashMap<IOFSwitch, Map<Long, Short>>();
+
+        //blacklist = new HashMap<Long, Long>();
     }
 
     @Override
