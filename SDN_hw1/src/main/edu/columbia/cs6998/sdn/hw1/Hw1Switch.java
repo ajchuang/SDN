@@ -345,11 +345,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             return Command.CONTINUE;
 */
 
-// CS6998: Ask the switch to flood the packet to all of its ports
-        // Now output flow-mod and/or packet
-        // CS6998: Fill out the following ???? to obtain outPort
-
-
+        // CS6998: Ask the switch to flood the packet to all of its ports
         Short outPort = swMap.get (destMac);
 
         if (outPort == null) {
@@ -360,7 +356,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
             log.trace("ignoring packet that arrived on same port as learned destination:"
                     + " switch {} dest MAC {} port {}",
-                    new Object[]{ sw, HexString.toHexString(destMac), outPort });
+                    new Object[]{ sw, HexString.toHexString (destMac), outPort });
 
         } else {
 
