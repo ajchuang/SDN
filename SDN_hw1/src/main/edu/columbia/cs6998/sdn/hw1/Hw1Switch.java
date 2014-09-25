@@ -31,7 +31,7 @@
 
 package edu.columbia.cs6998.sdn.hw1;
 
-import java.io.IOException;
+import java.util.Iterator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -40,7 +40,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
 
 import net.floodlightcontroller.core.FloodlightContext;
 import net.floodlightcontroller.core.IFloodlightProviderService;
@@ -77,6 +81,18 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
     // Stores the learned state for each switch: for each switch, we store <MAC addr, port>
     protected Map<IOFSwitch, Map<Long, Short>> macToSwitchPortMap;
+    
+    // Stores the number of links established <MacAddr, Connection Count>
+    protected Map<Long, Long> m_hostConnCnt;
+    
+    
+    
+    // Elephant flow counter Map<sw, Map<src, start_time>>
+    protected Map<IOFSwitch, Map<Long, Long>> m_elephantFlowCnt;
+    
+    // @lfred: Web server addresses
+    protected Map<Integer, Long>   m_webSvr;
+    protected Map<Integer, Long>   m_svrStats;
 
     // CS6998: data structures for the firewall feature
     // Stores the MAC address of hosts to block: <Macaddr, blockedTime>
@@ -115,12 +131,58 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      * @param floodlightProvider the floodlightProvider to set
      */
     public void setFloodlightProvider (IFloodlightProviderService a_floodlightProvider) {
+
+        log.trace ("[@lfred] setFloodlightProvider");
         this.floodlightProvider = a_floodlightProvider;
     }
 
     @Override
     public String getName() {
         return "hw1switch";
+    }
+    
+    /* @lfred: update the blacklist entries according to the */
+    protected void agingBlackList (long now) {
+        
+        java.util.Iterator<Map.Entry<Long, Long>> it = blacklist.entrySet ().iterator ();
+        
+        while (it.hasNext ()) {
+            Map.Entry<Long, Long> entry = it.next ();
+            
+            if (now - entry.getValue ().longValue () > FIREWALL_BLOCK_TIME_DUR)
+                it.remove ();
+        }
+    }
+    
+    /* check if a certain source is blocked */
+    protected boolean isInBlackList (long sourceMac, long now) {
+        
+        Long blockTime = blacklist.get (Long.valueOf (sourceMac));
+        
+        if (blockTime != null) {
+            if (now - blockTime.longValue () < FIREWALL_BLOCK_TIME_DUR) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    protected void blockHost (long sourceMac, long now) {
+        
+        blacklist.put (Long.valueOf (sourceMac), now);
+        
+        /* transformation long to byte[] */
+        ByteBuffer buffer = ByteBuffer.allocate (Long.SIZE/Byte.SIZE);
+        buffer.putLong (sourceMac);
+        
+        /* delete the flow entry to all the switches */
+        for (IOFSwitch sw: macToSwitchPortMap.keySet ()) {
+            
+            OFMatch match = new OFMatch ();
+            match.setDataLayerSource (buffer.array ()); 
+            writeFlowMod (sw, OFFlowMod.OFPFC_DELETE, 0, match, (short)0);
+        }
     }
 
     /**
@@ -130,6 +192,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      * @param portVal The switchport that the host is on
      */
     protected void addToPortMap (IOFSwitch sw, long mac, short portVal) {
+
+        log.trace ("[@lfred] addToPortMap");
 
         Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
 
@@ -149,6 +213,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      */
     protected void removeFromPortMap (IOFSwitch sw, long mac) {
 
+        log.trace ("[@lfred] removeFromPortMap");
+
         Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
 
         if (swMap != null) {
@@ -165,6 +231,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      * @return The port the host is on
      */
     public Short getFromPortMap (IOFSwitch sw, long mac) {
+
+        log.trace ("[@lfred] getFromPortMap");
 
         Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
 
@@ -188,49 +256,23 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 		    int bufferId,
 		    OFMatch match,
 		    short outPort) {
-        // from openflow 1.0 spec - need to set these on a struct ofp_flow_mod:
-        // struct ofp_flow_mod {
-        //    struct ofp_header header;
-        //    struct ofp_match match; /* Fields to match */
-        //    uint64_t cookie; /* Opaque controller-issued identifier. */
-        //
-        //    /* Flow actions. */
-        //    uint16_t command; /* One of OFPFC_*. */
-        //    uint16_t idle_timeout; /* Idle time before discarding (seconds). */
-        //    uint16_t hard_timeout; /* Max time before discarding (seconds). */
-        //    uint16_t priority; /* Priority level of flow entry. */
-        //    uint32_t buffer_id; /* Buffered packet to apply to (or -1).
-        //                           Not meaningful for OFPFC_DELETE*. */
-        //    uint16_t out_port; /* For OFPFC_DELETE* commands, require
-        //                          matching entries to include this as an
-        //                          output port. A value of OFPP_NONE
-        //                          indicates no restriction. */
-        //    uint16_t flags; /* One of OFPFF_*. */
-        //    struct ofp_action_header actions[0]; /* The action length is inferred
-        //                                            from the length field in the
-        //                                            header. */
-        //    };
-        OFFlowMod flowMod = (OFFlowMod) floodlightProvider.getOFMessageFactory().getMessage(OFType.FLOW_MOD);
-        flowMod.setMatch(match);
-        flowMod.setCookie(Hw1Switch.HW1_SWITCH_COOKIE);
-        flowMod.setCommand(command);
-        flowMod.setIdleTimeout(Hw1Switch.IDLE_TIMEOUT_DEFAULT);
-        flowMod.setHardTimeout(Hw1Switch.HARD_TIMEOUT_DEFAULT);
-        flowMod.setPriority(Hw1Switch.PRIORITY_DEFAULT);
-        flowMod.setBufferId(bufferId);
-        flowMod.setOutPort((command == OFFlowMod.OFPFC_DELETE) ? outPort : OFPort.OFPP_NONE.getValue());
-        flowMod.setFlags((command == OFFlowMod.OFPFC_DELETE) ? 0 : (short) (1 << 0)); // OFPFF_SEND_FLOW_REM
+
+        OFFlowMod flowMod = (OFFlowMod) floodlightProvider.getOFMessageFactory ().getMessage (OFType.FLOW_MOD);
+
+        /* config the flow mod */
+        flowMod.setMatch (match);
+        flowMod.setCookie (Hw1Switch.HW1_SWITCH_COOKIE);
+        flowMod.setCommand (command);
+        flowMod.setIdleTimeout (Hw1Switch.IDLE_TIMEOUT_DEFAULT);
+        flowMod.setHardTimeout (Hw1Switch.HARD_TIMEOUT_DEFAULT);
+        flowMod.setPriority (Hw1Switch.PRIORITY_DEFAULT);
+        flowMod.setBufferId (bufferId);
+        flowMod.setOutPort ((command == OFFlowMod.OFPFC_DELETE) ? outPort : OFPort.OFPP_NONE.getValue());
+        flowMod.setFlags ((command == OFFlowMod.OFPFC_DELETE) ? 0 : (short) (1 << 0)); // OFPFF_SEND_FLOW_REM
 
         // set the ofp_action_header/out actions:
-        // from the openflow 1.0 spec: need to set these on a struct ofp_action_output:
-        // uint16_t type; /* OFPAT_OUTPUT. */
-        // uint16_t len; /* Length is 8. */
-        // uint16_t port; /* Output port. */
-        // uint16_t max_len; /* Max length to send to controller. */
-        // type/len are set because it is OFActionOutput,
-        // and port, max_len are arguments to this constructor
-        flowMod.setActions(Arrays.asList((OFAction) new OFActionOutput(outPort, (short) 0xffff)));
-        flowMod.setLength((short) (OFFlowMod.MINIMUM_LENGTH + OFActionOutput.MINIMUM_LENGTH));
+        flowMod.setActions (Arrays.asList((OFAction) new OFActionOutput(outPort, (short) 0xffff)));
+        flowMod.setLength ((short) (OFFlowMod.MINIMUM_LENGTH + OFActionOutput.MINIMUM_LENGTH));
 
         if (log.isTraceEnabled()) {
             log.trace("{} {} flow mod {}",
@@ -239,9 +281,9 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
         // and write it out
         try {
-            sw.write(flowMod, null);
+            sw.write (flowMod, null);
         } catch (IOException e) {
-            log.error("Failed to write {} to switch {}", new Object[] { flowMod, sw }, e);
+            log.error ("Failed to write {} to switch {}", new Object[] { flowMod, sw }, e);
         }
     }
 
@@ -256,42 +298,34 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         OFPacketIn packetInMessage,
         short egressPort) {
 
-        // from openflow 1.0 spec - need to set these on a struct ofp_packet_out:
-        // uint32_t buffer_id; /* ID assigned by datapath (-1 if none). */
-        // uint16_t in_port; /* Packet's input port (OFPP_NONE if none). */
-        // uint16_t actions_len; /* Size of action array in bytes. */
-        // struct ofp_action_header actions[0]; /* Actions. */
-        /* uint8_t data[0]; */ /* Packet data. The length is inferred
-                                  from the length field in the header.
-                                  (Only meaningful if buffer_id == -1.) */
-
-        OFPacketOut packetOutMessage = (OFPacketOut) floodlightProvider.getOFMessageFactory().getMessage(OFType.PACKET_OUT);
-        short packetOutLength = (short) OFPacketOut.MINIMUM_LENGTH; // starting length
+        OFPacketOut packetOutMessage =
+            (OFPacketOut) floodlightProvider.getOFMessageFactory().getMessage (OFType.PACKET_OUT);
+        short packetOutLength = (short) OFPacketOut.MINIMUM_LENGTH;
 
         // Set buffer_id, in_port, actions_len
-        packetOutMessage.setBufferId(packetInMessage.getBufferId());
-        packetOutMessage.setInPort(packetInMessage.getInPort());
-        packetOutMessage.setActionsLength((short) OFActionOutput.MINIMUM_LENGTH);
+        packetOutMessage.setBufferId (packetInMessage.getBufferId ());
+        packetOutMessage.setInPort (packetInMessage.getInPort ());
+        packetOutMessage.setActionsLength ((short) OFActionOutput.MINIMUM_LENGTH);
         packetOutLength += OFActionOutput.MINIMUM_LENGTH;
 
         // set actions
         List<OFAction> actions = new ArrayList<OFAction>(1);
-        actions.add(new OFActionOutput(egressPort, (short) 0));
-        packetOutMessage.setActions(actions);
+        actions.add (new OFActionOutput(egressPort, (short) 0));
+        packetOutMessage.setActions (actions);
 
         // set data - only if buffer_id == -1
-        if (packetInMessage.getBufferId() == OFPacketOut.BUFFER_ID_NONE) {
-            byte[] packetData = packetInMessage.getPacketData();
-            packetOutMessage.setPacketData(packetData);
+        if (packetInMessage.getBufferId () == OFPacketOut.BUFFER_ID_NONE) {
+            byte[] packetData = packetInMessage.getPacketData ();
+            packetOutMessage.setPacketData (packetData);
             packetOutLength += (short) packetData.length;
         }
 
         // finally, set the total length
-        packetOutMessage.setLength(packetOutLength);
+        packetOutMessage.setLength (packetOutLength);
 
-        // and write it out
+        // and write it to the switch
         try {
-            sw.write(packetOutMessage, null);
+            sw.write (packetOutMessage, null);
         } catch (IOException e) {
             log.error("Failed to write {} to switch {}: {}", new Object[] { packetOutMessage, sw, e });
         }
@@ -317,33 +351,45 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         match.loadFromPacket (pi.getPacketData (), inPort.shortValue ());
         Long sourceMac = Ethernet.toLong (match.getDataLayerSource ());
         Long destMac = Ethernet.toLong (match.getDataLayerDestination ());
+        long now = System.currentTimeMillis ();
 
-        log.trace ("packet in :" + sourceMac.toString () + ":" + destMac.toString ());
+        log.error ("[@lfred] processPacketInMessage: packet in :" + 
+            sourceMac.toString () + ":" + destMac.toString ());
 
-         Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
+        /* @lfred: update the aging table */
+        agingBlackList (now);
+        
+        /* @lfred: filter out the blacklist. just skip these packets */
+        if (isInBlackList (sourceMac.longValue (), now) == true)
+            return Command.CONTINUE;
+        
+        Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
+    
+        /* @lfred: block the host with too many connections */
+        Long cnt = m_hostConnCnt.get (sourceMac);
 
+        if (cnt != null) {
+            /* block the flow */
+            if (m_hostConnCnt.get (sourceMac).longValue () > MAX_DESTINATION_NUMBER) {
+                return Command.CONTINUE;
+            }
+        } else {
+            cnt = Long.valueOf (0);
+        } 
+        
+        /* increment the max connection counter */
+        m_hostConnCnt.put (sourceMac, Long.valueOf (cnt.longValue () + 1));
+    
         /* implement LEARNING SWITCH */
         if (swMap == null) {
             swMap = Collections.synchronizedMap (new LRULinkedHashMap<Long, Short>(MAX_MACS_PER_SWITCH));
             macToSwitchPortMap.put (sw, swMap);
         }
-
-        /* insert the map entry for incoming port */
+            
+        /* @lfred: insert the map entry for incoming port - assuming the port will not change */
         if (swMap.get (sourceMac) == null) {
             swMap.put (sourceMac, inPort);
         }
-
-/* CS6998: Do works here to implement super firewall
-        Hint: You may check connection limitation here.
-        ....
-*/
-
-/* CS6998: Filter-out hosts in blacklist
- *         Also, when the host is in blacklist check if the blockout time is
- *         expired and handle properly
-        if (....)
-            return Command.CONTINUE;
-*/
 
         // CS6998: Ask the switch to flood the packet to all of its ports
         Short outPort = swMap.get (destMac);
@@ -381,21 +427,75 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     private Command processFlowRemovedMessage (
         IOFSwitch sw,
         OFFlowRemoved flowRemovedMessage) {
-
+            
         if (flowRemovedMessage.getCookie () != Hw1Switch.HW1_SWITCH_COOKIE)
             return Command.CONTINUE;
-
-        Long sourceMac = Ethernet.toLong (flowRemovedMessage.getMatch().getDataLayerSource());
-        Long destMac = Ethernet.toLong (flowRemovedMessage.getMatch().getDataLayerDestination());
+            
+        long now = System.currentTimeMillis ();
+        Long sourceMac = Ethernet.toLong (flowRemovedMessage.getMatch ().getDataLayerSource ());
+        Long destMac = Ethernet.toLong (flowRemovedMessage.getMatch ().getDataLayerDestination ());
 
         if (log.isTraceEnabled ())
             log.trace ("{} flow entry removed {}", sw, flowRemovedMessage);
+            
+        /* aging the black list */
+        agingBlackList (now);
 
-        // CS6998: Do works here to implement super firewall
-        //  Hint: You may detect Elephant Flow here.
-        //  ....
-        //
+        /* reduce the link counter */
+        Long cnt = m_hostConnCnt.get (sourceMac);
+        
+        if (cnt != null)
+            m_hostConnCnt.put (sourceMac, Long.valueOf (cnt.longValue () - 1));
+        else
+            log.error ("null host connect");
 
+
+/* CS6998: Do works here to implement super firewall */
+/*  Hint: You may detect Elephant Flow here. */
+
+        /* get the number of bytes of this flow */
+        long totalByteCount = flowRemovedMessage.getByteCount ();
+        Map<Long, Long> elephantCnt = m_elephantFlowCnt.get (sw);
+        
+        /* one elephant flow is found */
+        if (totalByteCount > ELEPHANT_FLOW_BAND_WIDTH) {
+            
+            if (elephantCnt == null) {
+                elephantCnt = 
+                    Collections.synchronizedMap (
+                        new LRULinkedHashMap<Long, Long> (MAX_MACS_PER_SWITCH));
+                        
+                elephantCnt.put (sourceMac, Long.valueOf (now));
+                m_elephantFlowCnt.put (sw, elephantCnt);
+            } else {
+                
+                // aging the table
+                java.util.Iterator<Map.Entry<Long, Long>> iter = elephantCnt.entrySet ().iterator ();
+                
+                while (iter.hasNext ()) {
+                    Map.Entry<Long, Long> entry = iter.next ();
+                    if (now - entry.getValue () > FIREWALL_BLOCK_TIME_DUR){
+                        iter.remove();
+                    }
+                }
+                
+                /* add to the elephant count table */
+                elephantCnt.put (sourceMac, Long.valueOf (now));
+                
+                /* check if we need to block bad guys */
+                if (elephantCnt.size () + 1 > MAX_ELEPHANT_FLOW_NUMBER) {
+                    
+                    Iterator<Map.Entry<Long, Long>> it = blacklist.entrySet ().iterator ();
+                    
+                    /* iterating and send DELETE flow messages */
+                    while (it.hasNext ()) {
+                        Map.Entry<Long, Long> entry = it.next ();
+                        blockHost (entry.getKey ().longValue (), now);
+                    }
+                } 
+            }
+        }
+        
         return Command.CONTINUE;
     }
 
@@ -406,13 +506,13 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         OFMessage msg,
         FloodlightContext cntx) {
 
-        switch (msg.getType()) {
+        switch (msg.getType ()) {
             case PACKET_IN:
                 return this.processPacketInMessage(sw, (OFPacketIn) msg, cntx);
-            /*
+
             case FLOW_REMOVED:
                 return this.processFlowRemovedMessage(sw, (OFFlowRemoved) msg);
-            */
+
             case ERROR:
                 log.info ("received an error {} from switch {}", (OFError) msg, sw);
                 return Command.CONTINUE;
@@ -437,7 +537,6 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     }
 
     // IFloodlightModule
-
     @Override
     public Collection<Class<? extends IFloodlightService>> getModuleServices() {
 
@@ -469,19 +568,39 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     @Override
     public void init(FloodlightModuleContext context) throws FloodlightModuleException {
 
+        /* get flood light instance */
         floodlightProvider =
                 context.getServiceImpl (IFloodlightProviderService.class);
 
         /* instantiate the port map */
         macToSwitchPortMap = new ConcurrentHashMap<IOFSwitch, Map<Long, Short>>();
+        
+        /* instantiate the elephant flow counter */
+        m_elephantFlowCnt = new ConcurrentHashMap<IOFSwitch, Map<Long, Long>>();
+        
+        /* instantiate the connection counter */
+        m_hostConnCnt = new ConcurrentHashMap<Long, Long>();
 
-        //blacklist = new HashMap<Long, Long>();
+        /* instantiate the blacklist */
+        blacklist = new ConcurrentHashMap<Long, Long> ();
+        
+        /* web server loading stats <IP, MAC> */
+        m_webSvr = new ConcurrentHashMap<Integer, Long> ();
+        
+        /* web server loading stats <IP, count> */
+        m_svrStats = new ConcurrentHashMap<Integer, Long> ();
+        
+        initWebSvrs ();
+    }
+    
+    /* @lfred: the function is used to initialize the web server addressed and accounts */
+    protected void initWebSvrs () {
     }
 
     @Override
     public void startUp (FloodlightModuleContext context) {
-        floodlightProvider.addOFMessageListener(OFType.PACKET_IN, this);
-        //floodlightProvider.addOFMessageListener(OFType.FLOW_REMOVED, this);
-        floodlightProvider.addOFMessageListener(OFType.ERROR, this);
+        floodlightProvider.addOFMessageListener (OFType.PACKET_IN, this);
+        floodlightProvider.addOFMessageListener (OFType.FLOW_REMOVED, this);
+        floodlightProvider.addOFMessageListener (OFType.ERROR, this);
     }
 }
