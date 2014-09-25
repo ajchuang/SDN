@@ -181,6 +181,13 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             
             OFMatch match = new OFMatch ();
             match.setDataLayerSource (buffer.array ()); 
+            
+            /* set wildcards - we set only DL SRC port */
+            match.setWildcards (
+                ((Integer)sw.getAttribute (
+                    IOFSwitch.PROP_FASTWILDCARDS)).intValue() & 
+                    ~OFMatch.OFPFW_DL_SRC);
+                    
             writeFlowMod (sw, OFFlowMod.OFPFC_DELETE, 0, match, (short)0);
         }
     }
@@ -353,42 +360,48 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         Long destMac = Ethernet.toLong (match.getDataLayerDestination ());
         long now = System.currentTimeMillis ();
 
-        log.error ("[@lfred] processPacketInMessage: packet in :" + 
-            sourceMac.toString () + ":" + destMac.toString ());
+        log.error ("[@lfred] processPacketInMessage: from " + 
+            sourceMac.toString () + " to " + destMac.toString ());
 
         /* @lfred: update the aging table */
         agingBlackList (now);
         
         /* @lfred: filter out the blacklist. just skip these packets */
-        if (isInBlackList (sourceMac.longValue (), now) == true)
+        if (isInBlackList (sourceMac.longValue (), now) == true) {
+            log.error ("[@lfred] @ rejected: backlist");
             return Command.CONTINUE;
+        }
         
-        Map<Long, Short> swMap = macToSwitchPortMap.get (sw);
-    
         /* @lfred: block the host with too many connections */
         Long cnt = m_hostConnCnt.get (sourceMac);
 
         if (cnt != null) {
             /* block the flow */
             if (m_hostConnCnt.get (sourceMac).longValue () > MAX_DESTINATION_NUMBER) {
+                log.error ("[@lfred] Max flow number is reached for " + sourceMac);
                 return Command.CONTINUE;
             }
         } else {
             cnt = Long.valueOf (0);
-        } 
+        }
         
         /* increment the max connection counter */
         m_hostConnCnt.put (sourceMac, Long.valueOf (cnt.longValue () + 1));
-    
+        
+        /* get the switch map table */
+        Map<Long, Short> swMap = macToSwitchPortMap.get (sw); 
+        
         /* implement LEARNING SWITCH */
         if (swMap == null) {
-            swMap = Collections.synchronizedMap (new LRULinkedHashMap<Long, Short>(MAX_MACS_PER_SWITCH));
+            swMap = Collections.synchronizedMap (new LRULinkedHashMap<Long, Short> (MAX_MACS_PER_SWITCH));
             macToSwitchPortMap.put (sw, swMap);
         }
             
         /* @lfred: insert the map entry for incoming port - assuming the port will not change */
         if (swMap.get (sourceMac) == null) {
             swMap.put (sourceMac, inPort);
+        } else {
+            log.error ("[@lfred] Port has been changed !? " + sourceMac);
         }
 
         // CS6998: Ask the switch to flood the packet to all of its ports
@@ -406,10 +419,15 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
         } else {
 
-            match.setWildcards (((Integer)sw.getAttribute(IOFSwitch.PROP_FASTWILDCARDS)).intValue()
-                    & ~OFMatch.OFPFW_IN_PORT
-                    & ~OFMatch.OFPFW_DL_SRC & ~OFMatch.OFPFW_DL_DST
-                    & ~OFMatch.OFPFW_NW_SRC_MASK & ~OFMatch.OFPFW_NW_DST_MASK);
+            /* set wildcards */
+            match.setWildcards (
+                ((Integer)sw.getAttribute (
+                    IOFSwitch.PROP_FASTWILDCARDS)).intValue() & 
+                    ~OFMatch.OFPFW_IN_PORT & 
+                    ~OFMatch.OFPFW_DL_SRC & 
+                    ~OFMatch.OFPFW_DL_DST & 
+                    ~OFMatch.OFPFW_NW_SRC_MASK & 
+                    ~OFMatch.OFPFW_NW_DST_MASK);
 
             /* send to the correct port */
             writeFlowMod (sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort.shortValue ());
@@ -438,7 +456,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         if (log.isTraceEnabled ())
             log.trace ("{} flow entry removed {}", sw, flowRemovedMessage);
             
-        /* aging the black list */
+        /* updating & aging the black list */
         agingBlackList (now);
 
         /* reduce the link counter */
@@ -448,10 +466,6 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             m_hostConnCnt.put (sourceMac, Long.valueOf (cnt.longValue () - 1));
         else
             log.error ("null host connect");
-
-
-/* CS6998: Do works here to implement super firewall */
-/*  Hint: You may detect Elephant Flow here. */
 
         /* get the number of bytes of this flow */
         long totalByteCount = flowRemovedMessage.getByteCount ();
@@ -507,6 +521,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         FloodlightContext cntx) {
 
         switch (msg.getType ()) {
+            
             case PACKET_IN:
                 return this.processPacketInMessage(sw, (OFPacketIn) msg, cntx);
 
@@ -527,18 +542,18 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     }
 
     @Override
-    public boolean isCallbackOrderingPrereq(OFType type, String name) {
+    public boolean isCallbackOrderingPrereq (OFType type, String name) {
         return false;
     }
 
     @Override
-    public boolean isCallbackOrderingPostreq(OFType type, String name) {
+    public boolean isCallbackOrderingPostreq (OFType type, String name) {
         return false;
     }
 
     // IFloodlightModule
     @Override
-    public Collection<Class<? extends IFloodlightService>> getModuleServices() {
+    public Collection<Class<? extends IFloodlightService>> getModuleServices () {
 
         Collection<Class<? extends IFloodlightService>> l =
                 new ArrayList<Class<? extends IFloodlightService>>();
@@ -566,7 +581,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     }
 
     @Override
-    public void init(FloodlightModuleContext context) throws FloodlightModuleException {
+    public void init (FloodlightModuleContext context) 
+        throws FloodlightModuleException {
 
         /* get flood light instance */
         floodlightProvider =
@@ -595,6 +611,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     
     /* @lfred: the function is used to initialize the web server addressed and accounts */
     protected void initWebSvrs () {
+        
+        // need to manually fill-in
     }
 
     @Override
