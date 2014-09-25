@@ -107,9 +107,9 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     public static final long HW1_SWITCH_COOKIE =
         (long) (HW1_SWITCH_APP_ID & ((1 << APP_ID_BITS) - 1)) << APP_ID_SHIFT;
 
-    // more flow-mod defaults
-    protected static final short IDLE_TIMEOUT_DEFAULT = 10;
-    protected static final short HARD_TIMEOUT_DEFAULT = 0;
+    // more flow-mod defaults. We should not have idle timeout, but with hard timeout?
+    protected static final short IDLE_TIMEOUT_DEFAULT = 0;
+    protected static final short HARD_TIMEOUT_DEFAULT = 10;
     protected static final short PRIORITY_DEFAULT = 100;
 
     // for managing our map sizes
@@ -355,13 +355,25 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         // Read in packet data headers by using OFMatch
         Short inPort = Short.valueOf (pi.getInPort ());
         OFMatch match = new OFMatch ();
+        
         match.loadFromPacket (pi.getPacketData (), inPort.shortValue ());
+        byte nwProtocol = match.getNetworkProtocol ();
+        boolean isNWPacket = false;
         Long sourceMac = Ethernet.toLong (match.getDataLayerSource ());
         Long destMac = Ethernet.toLong (match.getDataLayerDestination ());
         long now = System.currentTimeMillis ();
+        
+        if (nwProtocol == 0x01 || nwProtocol == 0x06 || nwProtocol == 0x11)
+            isNWPacket = true;
+        
+        if (destMac.longValue () > 20000) {
+            writePacketOutForPacketIn (sw, pi, OFPort.OFPP_FLOOD.getValue ());
+            return Command.CONTINUE;
+        }
 
-        log.error ("[@lfred] processPacketInMessage: from " + 
-            sourceMac.toString () + " to " + destMac.toString ());
+        log.error ("[@lfred] processPacketInMessage: type: " + nwProtocol + " from " + 
+            Long.toHexString (sourceMac.longValue ()) + " to " + 
+            Long.toHexString (destMac.longValue ()));
 
         /* @lfred: update the aging table */
         agingBlackList (now);
@@ -387,6 +399,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         
         /* increment the max connection counter */
         m_hostConnCnt.put (sourceMac, Long.valueOf (cnt.longValue () + 1));
+        log.error ("[@lfred] Source: " + sourceMac + " count: " + (cnt.longValue () + 1));
         
         /* get the switch map table */
         Map<Long, Short> swMap = macToSwitchPortMap.get (sw); 
@@ -401,7 +414,11 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         if (swMap.get (sourceMac) == null) {
             swMap.put (sourceMac, inPort);
         } else {
-            log.error ("[@lfred] Port has been changed !? " + sourceMac);
+            
+            /* @lfred: conflicts */
+            if (swMap.get (sourceMac).longValue () != inPort) {
+                log.error ("[@lfred] Port has been changed !? " + sourceMac);
+            }
         }
 
         // CS6998: Ask the switch to flood the packet to all of its ports
@@ -452,6 +469,10 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         long now = System.currentTimeMillis ();
         Long sourceMac = Ethernet.toLong (flowRemovedMessage.getMatch ().getDataLayerSource ());
         Long destMac = Ethernet.toLong (flowRemovedMessage.getMatch ().getDataLayerDestination ());
+        
+        log.error ("[@lfred] processFlowRemovedMessage : " + 
+                    Long.toHexString (sourceMac.longValue ()) + ":" + 
+                    Long.toHexString (destMac.longValue ()));
 
         if (log.isTraceEnabled ())
             log.trace ("{} flow entry removed {}", sw, flowRemovedMessage);
