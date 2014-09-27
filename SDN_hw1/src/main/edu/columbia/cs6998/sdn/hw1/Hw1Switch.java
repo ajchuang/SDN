@@ -68,10 +68,15 @@ import org.openflow.protocol.OFPacketIn;
 import org.openflow.protocol.OFPacketOut;
 import org.openflow.protocol.OFPort;
 import org.openflow.protocol.OFType;
+
 import org.openflow.protocol.action.OFAction;
 import org.openflow.protocol.action.OFActionOutput;
+import org.openflow.protocol.action.OFActionNetworkLayerAddress;
+import org.openflow.protocol.action.OFActionDataLayer;
 import org.openflow.protocol.action.OFActionDataLayerDestination;
 import org.openflow.protocol.action.OFActionNetworkLayerDestination;
+import org.openflow.protocol.action.OFActionDataLayerSource;
+import org.openflow.protocol.action.OFActionNetworkLayerSource;
 
 import org.openflow.util.HexString;
 import org.openflow.util.LRULinkedHashMap;
@@ -114,25 +119,25 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         (long) (HW1_SWITCH_APP_ID & ((1 << APP_ID_BITS) - 1)) << APP_ID_SHIFT;
 
     // more flow-mod defaults. We should not have idle timeout, but with hard timeout?
-    protected static final short IDLE_TIMEOUT_DEFAULT = 0;
-    protected static final short HARD_TIMEOUT_DEFAULT = 10;
-    protected static final short PRIORITY_DEFAULT   = 100;
-    protected static final short PRIORITY_HIGH      = 110;
+    protected static final short IDLE_TIMEOUT_DEFAULT   = 0;
+    protected static final short HARD_TIMEOUT_DEFAULT   = 10;
+    protected static final short PRIORITY_DEFAULT       = 100;
+    protected static final short PRIORITY_HIGH          = 110;
 
     // for managing our map sizes
-    protected static final int MAX_MACS_PER_SWITCH = 1000;
+    protected static final int MAX_MACS_PER_SWITCH      = 1000;
 
     // maxinum allowed elephant flow number for one switch
     protected static final int MAX_ELEPHANT_FLOW_NUMBER = 1;
 
     // maximum allowed destination number for one host
-    protected static final int MAX_DESTINATION_NUMBER = 3;
+    protected static final int MAX_DESTINATION_NUMBER   = 3;
 
     // maxinum allowed transmission rate: using 10 for test purpose
     protected static final int ELEPHANT_FLOW_BAND_WIDTH = 10;
 
     // time duration the firewall will block each node for
-    protected static final int FIREWALL_BLOCK_TIME_DUR = (10 * 1000);
+    protected static final int FIREWALL_BLOCK_TIME_DUR  = (10 * 1000);
 
     /**
      * @param floodlightProvider the floodlightProvider to set
@@ -283,7 +288,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         OFMatch match,
         short outPort,
         short priority,
-        List<OFAction> actions) {
+        List<OFAction> actions,
+        int actLen) {
 
         OFFlowMod flowMod = (OFFlowMod) floodlightProvider.getOFMessageFactory().getMessage(OFType.FLOW_MOD);
 
@@ -299,17 +305,20 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         flowMod.setFlags((command == OFFlowMod.OFPFC_DELETE) ? 0 : (short) (1 << 0));   // OFPFF_SEND_FLOW_REM
 
         // set the ofp_action_header/out actions:
-        if (actions == null)
+        if (actions == null) {
             flowMod.setActions(Arrays.asList((OFAction) new OFActionOutput(outPort, (short) 0xffff)));
-        else
+            actLen = OFActionOutput.MINIMUM_LENGTH;
+        } else {
             flowMod.setActions(actions);
-
-        flowMod.setLength((short) (OFFlowMod.MINIMUM_LENGTH + OFActionOutput.MINIMUM_LENGTH));
+        }
 
         if (log.isTraceEnabled()) {
             log.trace("{} {} flow mod {}",
                       new Object[] { sw, (command == OFFlowMod.OFPFC_DELETE) ? "deleting" : "adding", flowMod });
         }
+        
+        // setup length
+        flowMod.setLength ((short) (OFFlowMod.MINIMUM_LENGTH + actLen));
 
         // and write it out
         try {
@@ -328,7 +337,11 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     private void writePacketOutForPacketIn(
         IOFSwitch sw,
         OFPacketIn packetInMessage,
-        short egressPort) {
+        short egressPort,
+        long newDestMac,
+        int newDestIp,
+        long newSrcMac,
+        int newSrcIp) {
 
         OFPacketOut packetOutMessage =
             (OFPacketOut) floodlightProvider.getOFMessageFactory().getMessage(OFType.PACKET_OUT);
@@ -337,13 +350,43 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         // Set buffer_id, in_port, actions_len
         packetOutMessage.setBufferId(packetInMessage.getBufferId());
         packetOutMessage.setInPort(packetInMessage.getInPort());
-        packetOutMessage.setActionsLength((short) OFActionOutput.MINIMUM_LENGTH);
-        packetOutLength += OFActionOutput.MINIMUM_LENGTH;
-
+        
         // set actions
-        List<OFAction> actions = new ArrayList<OFAction>(1);
+        List<OFAction> actions = new ArrayList<OFAction>(5);
+        int lenAction = 0;
+        
+        if (newDestMac != -1) {
+            actions.add(new OFActionDataLayerDestination (Ethernet.toByteArray(newDestMac)));
+            lenAction += OFActionDataLayer.MINIMUM_LENGTH;
+        }
+            
+        if (newDestIp != -1) {
+            actions.add(new OFActionNetworkLayerDestination (newDestIp));
+            lenAction += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
+        }
+            
+        if (newSrcMac != -1) {
+            actions.add(new OFActionDataLayerSource (Ethernet.toByteArray(newSrcMac)));
+            lenAction += OFActionDataLayer.MINIMUM_LENGTH;
+        }
+            
+        if (newSrcIp != -1) {
+            actions.add(new OFActionNetworkLayerSource (newSrcIp));
+            lenAction += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
+        }
+        
+        /* @lfred: set output port */    
         actions.add(new OFActionOutput(egressPort, (short) 0));
+        lenAction += OFActionOutput.MINIMUM_LENGTH;
+        
+        /* @lfred: set action lens */
+        packetOutMessage.setActionsLength((short) lenAction);
+        
+        /* @lfred: attach the actions to the packet */
         packetOutMessage.setActions(actions);
+        
+        /* increment packetOutLength */
+        packetOutLength += lenAction;
 
         // set data - only if buffer_id == -1
         if (packetInMessage.getBufferId() == OFPacketOut.BUFFER_ID_NONE) {
@@ -383,27 +426,33 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
         match.loadFromPacket(pi.getPacketData(), inPort.shortValue());
         byte nwProtocol = match.getNetworkProtocol();
-        boolean isNWPacket = false;
         Long sourceMac = Ethernet.toLong(match.getDataLayerSource());
         Long destMac = Ethernet.toLong(match.getDataLayerDestination());
+        
         long now = System.currentTimeMillis();
-        boolean switchAddr = false;
-
-        if (nwProtocol == 0x01 || nwProtocol == 0x06 || nwProtocol == 0x11)
-            isNWPacket = true;
-
-        // @lfred: we process only NW layer packets
-        if (destMac.longValue() > 20000) {  // (isNWPacket != true) {
-            writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
+        boolean isNWPacket = true;
+        boolean switchSrcAddr = false;
+        boolean switchDstAddr = false;
+        
+        /* handle the arp packet: allow ARP to be sent */
+        if (match.getDataLayerType () == 0x0806) {
+            log.error ("[@lfred] Process arp packets.");
+            writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue(), -1, -1, -1, -1);
             return Command.CONTINUE;
         }
 
-        int destIp = match.getNetworkDestination();
+        /* @lfred: we process only NW layer packets */
+        /* 0x01: ICMP, 0x06: TCP, 0x11: UDP */
+        if (nwProtocol != 0x01 && nwProtocol != 0x06 && nwProtocol != 0x11) {
+            isNWPacket = false;
+            writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue(), -1, -1, -1, -1);
+            return Command.CONTINUE;
+        }
 
         log.error("[@lfred] processPacketInMessage: type: " + nwProtocol + " from " +
                   Long.toHexString(sourceMac.longValue()) + " to " +
                   Long.toHexString(destMac.longValue()));
-
+        
         /* @lfred: update the aging table */
         agingBlackList(now);
 
@@ -412,16 +461,28 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             log.error("[@lfred] @ rejected: backlist");
             return Command.CONTINUE;
         }
+        
+        int destIp = match.getNetworkDestination();
+        int srcIp = match.getNetworkSource();
+        long svrSrcMac;
 
         /* @lfred: if going to web server, change the dst Mac and dst IP */
         if (destIp == m_webSvrIp) {
             long newDstMac = findLeastLoadingMachine();
 
             if (newDstMac != destMac.longValue()) {
+                log.error("[@lfred] Doing load-balancing.");
                 destMac = Long.valueOf(newDstMac);
                 destIp = m_webSvr.get(Long.valueOf(newDstMac));
-                switchAddr = true;
+                switchDstAddr = true;
             }
+        }
+        
+        /* @lfred: deal with data sent from server */
+        if ((svrSrcMac = isAddrWebSvr(srcIp)) != -1) {
+            sourceMac = Long.valueOf (svrSrcMac);
+            srcIp  = m_webSvrIp;
+            switchSrcAddr = true;
         }
 
         /* @lfred: block the host with too many connections */
@@ -468,10 +529,26 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
         if (outPort == null) {
             /* flodding - we dont know where to forward the packet. */
-            writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
-
+            log.error("[@lfred] packet flooding");
+            
+            long smac = -1, dmac = -1;
+            int sip = -1, dip = -1;  
+            
+            if (switchDstAddr) {
+                dmac = destMac.longValue();
+                dip = destIp; 
+            }
+            
+            if (switchSrcAddr) {
+                smac = sourceMac.longValue();
+                sip = srcIp;
+            }
+            
+            writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue(), dmac, dip, smac, sip);
+                
         } else if (outPort == match.getInputPort()) {
 
+            log.error("[@lfred] packet ignored");
             log.trace("ignoring packet that arrived on same port as learned destination:"
                       + " switch {} dest MAC {} port {}",
                       new Object[] { sw, HexString.toHexString(destMac), outPort });
@@ -488,7 +565,9 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                 ~OFMatch.OFPFW_NW_SRC_MASK &
                 ~OFMatch.OFPFW_NW_DST_MASK);
 
-            if (!switchAddr) {
+            if (!switchSrcAddr && !switchDstAddr) {
+                log.error("[@lfred] insert rules in the switch");
+                
                 /* send to the correct port */
                 writeFlowMod(
                     sw,
@@ -497,13 +576,34 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                     match,
                     outPort.shortValue(),
                     Hw1Switch.PRIORITY_DEFAULT,
-                    null);
+                    null,
+                    0);
             } else {
+                
+                log.error("[@lfred] LOAD-BALANCING: insert rules in the switch");
 
+                /* @lfred: this is forward route. Also need to modify the reverse route */
                 Vector<OFAction> actions = new Vector<OFAction>();
-                actions.add(new OFActionDataLayerDestination(Ethernet.toByteArray(destMac.longValue())));
-                actions.add(new OFActionNetworkLayerDestination(destIp));
+                short actLen = 0;
+                
+                if (switchDstAddr) {
+                    actions.add(new OFActionDataLayerDestination(Ethernet.toByteArray(destMac.longValue())));
+                    actLen += OFActionDataLayer.MINIMUM_LENGTH;
+                    
+                    actions.add(new OFActionNetworkLayerDestination(destIp));
+                    actLen += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
+                }
+                
+                if (switchSrcAddr) {
+                    actions.add(new OFActionDataLayerSource(Ethernet.toByteArray(sourceMac.longValue())));
+                    actLen += OFActionDataLayer.MINIMUM_LENGTH;
+                    
+                    actions.add(new OFActionNetworkLayerSource(srcIp));
+                    actLen += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
+                }
+                
                 actions.add(new OFActionOutput(outPort, (short) 0xffff));
+                actLen += OFActionOutput.MINIMUM_LENGTH;
 
                 /* send to the correct port */
                 writeFlowMod(
@@ -513,8 +613,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                     match,
                     outPort.shortValue(),
                     Hw1Switch.PRIORITY_DEFAULT,
-                    actions.subList(0, 3));
-
+                    actions.subList(0, actions.size()),
+                    actLen);
             }
         }
 
@@ -559,7 +659,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         if (cnt != null)
             cnt.remove(Long.valueOf(destMac));
         else
-            log.error("[@lfred] aynchronous !?");
+            log.error("[@lfred] asynchronous - ignored");
 
         /* get the number of bytes of this flow */
         long totalByteCount = flowRemovedMessage.getByteCount();
@@ -607,6 +707,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                 m_svrStats.put(
                     destMac,
                     Long.valueOf(m_svrStats.get(destMac).longValue() + 1));
+                    
+                log.error("[@lfred] Update web server load: " + destMac + ":" + m_svrStats.get(destMac));
             }
         }
 
@@ -715,13 +817,29 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         long minMac = Long.MAX_VALUE;
 
         for (Map.Entry<Long, Long> entry : m_svrStats.entrySet()) {
+            
+            log.error("   [@lfred] svr loading " + entry.getKey() + ":" + entry.getValue());
+            
             if (entry.getValue().longValue() < minLoad) {
                 minLoad = entry.getValue().longValue();
                 minMac = entry.getKey().longValue();
             }
         }
 
+        log.error("[@lfred] the machine with min loading is " + minMac);
         return minMac;
+    }
+    
+    protected long isAddrWebSvr (int ip) {
+        
+        for (Map.Entry<Long, Integer> entry : m_webSvr.entrySet()) {
+            
+            if (entry.getValue().intValue () == ip) {
+                return entry.getKey().longValue();
+            }
+        }
+        
+        return -1;
     }
 
     /* @lfred: the function is used to initialize the web server addressed and accounts */
@@ -732,12 +850,9 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
         m_webSvr.put(Long.valueOf(1), IPv4.toIPv4Address(new String("10.0.0.1")));
         m_webSvr.put(Long.valueOf(2), IPv4.toIPv4Address(new String("10.0.0.2")));
-
+        
         m_svrStats.put(Long.valueOf(1), Long.valueOf(0));
         m_svrStats.put(Long.valueOf(2), Long.valueOf(0));
-
-        // OFActionDataLayerDestination
-        // OFActionNetworkLayerDestination
     }
 
     @Override
