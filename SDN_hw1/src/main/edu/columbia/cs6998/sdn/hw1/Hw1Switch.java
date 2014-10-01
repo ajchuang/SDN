@@ -94,7 +94,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     // Stores the learned state for each switch: for each switch, we store <MAC addr, port>
     protected Map<IOFSwitch, Map<Long, Short>> macToSwitchPortMap;
 
-    // Stores the number of links established <SourceAddr, <DestAddr, timestamp>>
+    // Stores the number of links established <SourceAddr, <DestCnt, connectionCnt>>
     protected Map<Long, Map<Long, Long>> m_hostConnCnt;
 
     // Elephant flow counter Map<sw, Map<src, start_time>>
@@ -119,7 +119,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         (long) (HW1_SWITCH_APP_ID & ((1 << APP_ID_BITS) - 1)) << APP_ID_SHIFT;
 
     // more flow-mod defaults. We should not have idle timeout, but with hard timeout?
-    protected static final short IDLE_TIMEOUT_DEFAULT   = 0;
+    protected static final short IDLE_TIMEOUT_DEFAULT   = 10;
     protected static final short HARD_TIMEOUT_DEFAULT   = 10;
     protected static final short PRIORITY_DEFAULT       = 100;
     protected static final short PRIORITY_HIGH          = 110;
@@ -128,16 +128,19 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
     protected static final int MAX_MACS_PER_SWITCH      = 1000;
 
     // maxinum allowed elephant flow number for one switch
-    protected static final int MAX_ELEPHANT_FLOW_NUMBER = 1;
+    protected static final int MAX_ELEPHANT_FLOW_NUMBER = 2;
 
     // maximum allowed destination number for one host
     protected static final int MAX_DESTINATION_NUMBER   = 3;
 
     // maxinum allowed transmission rate: using 10 for test purpose
-    protected static final int ELEPHANT_FLOW_BAND_WIDTH = 10;
+    protected static final int ELEPHANT_FLOW_BAND_WIDTH = 1000;
 
     // time duration the firewall will block each node for
     protected static final int FIREWALL_BLOCK_TIME_DUR  = (10 * 1000);
+
+    // @lfred: load balance is ON
+    protected boolean SvrLoadBalance = true;
 
     /**
      * @param floodlightProvider the floodlightProvider to set
@@ -173,7 +176,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
         if (blockTime != null) {
             if (now - blockTime.longValue() < FIREWALL_BLOCK_TIME_DUR) {
-                log.error("[@lfred] host " + sourceMac + " is blocked. ");
+                log.info("[@lfred] host " + sourceMac + " is blocked. ");
                 return true;
             }
         }
@@ -183,7 +186,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
 
     protected void blockHost(long sourceMac, long now) {
 
-        log.error("[@lfred] blocking " + sourceMac);
+        log.info("[@lfred] blocking " + sourceMac);
 
         blacklist.put(Long.valueOf(sourceMac), now);
 
@@ -224,7 +227,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      */
     protected void addToPortMap(IOFSwitch sw, long mac, short portVal) {
 
-        log.trace("[@lfred] addToPortMap");
+        log.info("[@lfred] addToPortMap");
 
         Map<Long, Short> swMap = macToSwitchPortMap.get(sw);
 
@@ -244,7 +247,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      */
     protected void removeFromPortMap(IOFSwitch sw, long mac) {
 
-        log.trace("[@lfred] removeFromPortMap");
+        log.info("[@lfred] removeFromPortMap");
 
         Map<Long, Short> swMap = macToSwitchPortMap.get(sw);
 
@@ -263,7 +266,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      */
     public Short getFromPortMap(IOFSwitch sw, long mac) {
 
-        log.trace("[@lfred] getFromPortMap");
+        log.info("[@lfred] getFromPortMap");
 
         Map<Long, Short> swMap = macToSwitchPortMap.get(sw);
 
@@ -302,7 +305,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         flowMod.setPriority(priority);
         flowMod.setBufferId(bufferId);
         flowMod.setOutPort((command == OFFlowMod.OFPFC_DELETE) ? outPort : OFPort.OFPP_NONE.getValue());
-        flowMod.setFlags((command == OFFlowMod.OFPFC_DELETE) ? 0 : (short) (1 << 0));   // OFPFF_SEND_FLOW_REM
+        flowMod.setFlags((command == OFFlowMod.OFPFC_DELETE) ? 0 : (short) (1 << 0));    // OFPFF_SEND_FLOW_REM
 
         // set the ofp_action_header/out actions:
         if (actions == null) {
@@ -316,9 +319,9 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             log.trace("{} {} flow mod {}",
                       new Object[] { sw, (command == OFFlowMod.OFPFC_DELETE) ? "deleting" : "adding", flowMod });
         }
-        
+
         // setup length
-        flowMod.setLength ((short) (OFFlowMod.MINIMUM_LENGTH + actLen));
+        flowMod.setLength((short) (OFFlowMod.MINIMUM_LENGTH + actLen));
 
         // and write it out
         try {
@@ -350,41 +353,41 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         // Set buffer_id, in_port, actions_len
         packetOutMessage.setBufferId(packetInMessage.getBufferId());
         packetOutMessage.setInPort(packetInMessage.getInPort());
-        
+
         // set actions
         List<OFAction> actions = new ArrayList<OFAction>(5);
         int lenAction = 0;
-        
+
         if (newDestMac != -1) {
-            actions.add(new OFActionDataLayerDestination (Ethernet.toByteArray(newDestMac)));
+            actions.add(new OFActionDataLayerDestination(Ethernet.toByteArray(newDestMac)));
             lenAction += OFActionDataLayer.MINIMUM_LENGTH;
         }
-            
+
         if (newDestIp != -1) {
-            actions.add(new OFActionNetworkLayerDestination (newDestIp));
+            actions.add(new OFActionNetworkLayerDestination(newDestIp));
             lenAction += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
         }
-            
+
         if (newSrcMac != -1) {
-            actions.add(new OFActionDataLayerSource (Ethernet.toByteArray(newSrcMac)));
+            actions.add(new OFActionDataLayerSource(Ethernet.toByteArray(newSrcMac)));
             lenAction += OFActionDataLayer.MINIMUM_LENGTH;
         }
-            
+
         if (newSrcIp != -1) {
-            actions.add(new OFActionNetworkLayerSource (newSrcIp));
+            actions.add(new OFActionNetworkLayerSource(newSrcIp));
             lenAction += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
         }
-        
-        /* @lfred: set output port */    
+
+        /* @lfred: set output port */
         actions.add(new OFActionOutput(egressPort, (short) 0));
         lenAction += OFActionOutput.MINIMUM_LENGTH;
-        
+
         /* @lfred: set action lens */
         packetOutMessage.setActionsLength((short) lenAction);
-        
+
         /* @lfred: attach the actions to the packet */
         packetOutMessage.setActions(actions);
-        
+
         /* increment packetOutLength */
         packetOutLength += lenAction;
 
@@ -416,11 +419,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
      * @return
      */
     private Command processPacketInMessage(
-        IOFSwitch sw,
-        OFPacketIn pi,
-        FloodlightContext cntx) {
+        IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
 
-        // Read in packet data headers by using OFMatch
         Short inPort = Short.valueOf(pi.getInPort());
         OFMatch match = new OFMatch();
 
@@ -428,15 +428,11 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         byte nwProtocol = match.getNetworkProtocol();
         Long sourceMac = Ethernet.toLong(match.getDataLayerSource());
         Long destMac = Ethernet.toLong(match.getDataLayerDestination());
-        
         long now = System.currentTimeMillis();
-        boolean isNWPacket = true;
-        boolean switchSrcAddr = false;
-        boolean switchDstAddr = false;
-        
+        boolean switchSrcAddr = false, switchDstAddr = false, isNWPacket = true;
+
         /* handle the arp packet: allow ARP to be sent */
-        if (match.getDataLayerType () == 0x0806) {
-            log.error ("[@lfred] Process arp packets.");
+        if (match.getDataLayerType() == 0x0806) {
             writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue(), -1, -1, -1, -1);
             return Command.CONTINUE;
         }
@@ -449,175 +445,124 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             return Command.CONTINUE;
         }
 
-        log.error("[@lfred] processPacketInMessage: type: " + nwProtocol + " from " +
-                  Long.toHexString(sourceMac.longValue()) + " to " +
-                  Long.toHexString(destMac.longValue()));
-        
-        /* @lfred: update the aging table */
+        /* Block Blacklist */
         agingBlackList(now);
-
-        /* @lfred: filter out the blacklist. just skip these packets */
         if (isInBlackList(sourceMac.longValue(), now)) {
-            log.error("[@lfred] @ rejected: backlist");
+            log.info("[@lfred] @ rejected: backlist");
             return Command.CONTINUE;
         }
-        
-        int destIp = match.getNetworkDestination();
-        int srcIp = match.getNetworkSource();
+
+        /* load balancing */
+        int destIp = match.getNetworkDestination(), srcIp = match.getNetworkSource();
         long svrSrcMac;
 
-        /* @lfred: if going to web server, change the dst Mac and dst IP */
-        if (destIp == m_webSvrIp) {
-            long newDstMac = findLeastLoadingMachine();
+        if (SvrLoadBalance) {
 
-            if (newDstMac != destMac.longValue()) {
-                log.error("[@lfred] Doing load-balancing.");
-                destMac = Long.valueOf(newDstMac);
-                destIp = m_webSvr.get(Long.valueOf(newDstMac));
-                switchDstAddr = true;
+            long tmpSrcMac = isAddrWebSvr(srcIp), tmpDstMac = isAddrWebSvr(destIp);
+            if (!(tmpSrcMac != -1 && tmpDstMac != -1) &&
+                !(tmpSrcMac == -1 && tmpDstMac == -1)) {
+
+                /* @lfred: if going to web server, change the dst Mac and dst IP */
+                if (destIp == m_webSvrIp) {
+                    long newDstMac = findLeastLoadingMachine();
+
+                    if (newDstMac != destMac.longValue()) {
+                        log.info("[@lfred] Doing load-balancing. Switching to " + newDstMac);
+                        destMac = Long.valueOf(newDstMac);
+                        destIp = m_webSvr.get(Long.valueOf(newDstMac));
+                        switchDstAddr = true;
+                    }
+                }
+
+                if (tmpSrcMac != -1) { /* @lfred: deal with data sent from server */
+                    sourceMac = Long.valueOf(tmpSrcMac);
+                    srcIp  = m_webSvrIp;
+                    switchSrcAddr = true;
+                }
             }
         }
-        
-        /* @lfred: deal with data sent from server */
-        if ((svrSrcMac = isAddrWebSvr(srcIp)) != -1) {
-            sourceMac = Long.valueOf (svrSrcMac);
-            srcIp  = m_webSvrIp;
-            switchSrcAddr = true;
-        }
 
-        /* @lfred: block the host with too many connections */
+        /* Connection Cnt */
         Map<Long, Long> cnt = m_hostConnCnt.get(sourceMac);
-
+        
         if (cnt != null) {
-
-            cnt.put(destMac, now);
-
-            /* block the flow - drop the flow */
             if (cnt.size() > MAX_DESTINATION_NUMBER) {
-                log.error("[@lfred] Max flow number is reached for " + sourceMac);
+                blockHost(sourceMac, now);
+                cnt.clear();
                 return Command.CONTINUE;
             }
+    
+            Long x = cnt.get(destMac);
+            if (x != null)
+                cnt.put(destMac, Long.valueOf(x.longValue() + 1));
+            else
+                cnt.put(destMac, Long.valueOf(Long.valueOf(1)));
         } else {
-
-            /* the 1st flow - set as zero */
-            cnt = Collections.synchronizedMap(new LRULinkedHashMap<Long, Long>(MAX_DESTINATION_NUMBER * 2));
-            cnt.put(destMac, Long.valueOf(now));
+            cnt = new ConcurrentHashMap<Long, Long>();
+            cnt.put(destMac, Long.valueOf(1));
+            m_hostConnCnt.put(sourceMac, cnt);
         }
 
-        /* get the switch map table */
+        /* Learning Switch */
         Map<Long, Short> swMap = macToSwitchPortMap.get(sw);
-
-        /* implement LEARNING SWITCH */
-        if (swMap == null) {
+        if (swMap == null) { /* implement LEARNING SWITCH */
             swMap = Collections.synchronizedMap(new LRULinkedHashMap<Long, Short>(MAX_MACS_PER_SWITCH));
             macToSwitchPortMap.put(sw, swMap);
         }
 
-        /* @lfred: insert the map entry for incoming port - assuming the port will not change */
         if (swMap.get(sourceMac) == null) {
             swMap.put(sourceMac, inPort);
         } else {
-
-            /* @lfred: conflicts - but we will ignore this */
-            if (swMap.get(sourceMac).longValue() != inPort) {
-                log.error("[@lfred] Port has been changed !? " + sourceMac);
-            }
+            if (swMap.get(sourceMac).longValue() != inPort)
+                log.info("[@lfred] Port has been changed !? " + sourceMac);
         }
 
-        // CS6998: Ask the switch to flood the packet to all of its ports
+        /* Install Rule */
         Short outPort = swMap.get(destMac);
-
         if (outPort == null) {
-            /* flodding - we dont know where to forward the packet. */
-            log.error("[@lfred] packet flooding");
-            
             long smac = -1, dmac = -1;
-            int sip = -1, dip = -1;  
-            
+            int sip = -1, dip = -1;
+
             if (switchDstAddr) {
                 dmac = destMac.longValue();
-                dip = destIp; 
+                dip = destIp;
             }
-            
             if (switchSrcAddr) {
                 smac = sourceMac.longValue();
                 sip = srcIp;
             }
-            
             writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue(), dmac, dip, smac, sip);
-                
         } else if (outPort == match.getInputPort()) {
-
-            log.error("[@lfred] packet ignored");
-            log.trace("ignoring packet that arrived on same port as learned destination:"
-                      + " switch {} dest MAC {} port {}",
-                      new Object[] { sw, HexString.toHexString(destMac), outPort });
-
+            log.info("[@lfred] packet ignored");
         } else {
-
-            /* set wildcards */
             match.setWildcards(
                 ((Integer) sw.getAttribute(
-                     IOFSwitch.PROP_FASTWILDCARDS)).intValue() &
-                ~OFMatch.OFPFW_IN_PORT &
-                ~OFMatch.OFPFW_DL_SRC &
-                ~OFMatch.OFPFW_DL_DST &
-                ~OFMatch.OFPFW_NW_SRC_MASK &
-                ~OFMatch.OFPFW_NW_DST_MASK);
-
+                     IOFSwitch.PROP_FASTWILDCARDS)).intValue() & ~OFMatch.OFPFW_IN_PORT & ~OFMatch.OFPFW_DL_SRC & ~OFMatch.OFPFW_DL_DST & ~OFMatch.OFPFW_NW_SRC_MASK & ~OFMatch.OFPFW_NW_DST_MASK);
             if (!switchSrcAddr && !switchDstAddr) {
-                log.error("[@lfred] insert rules in the switch");
-                
-                /* send to the correct port */
-                writeFlowMod(
-                    sw,
-                    OFFlowMod.OFPFC_ADD,
-                    pi.getBufferId(),
-                    match,
-                    outPort.shortValue(),
-                    Hw1Switch.PRIORITY_DEFAULT,
-                    null,
-                    0);
+                log.info("[@lfred] insert rules in the switch");
+                writeFlowMod(sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort.shortValue(), Hw1Switch.PRIORITY_DEFAULT, null, 0);
             } else {
-                
-                log.error("[@lfred] LOAD-BALANCING: insert rules in the switch");
-
-                /* @lfred: this is forward route. Also need to modify the reverse route */
+                log.info("[@lfred] LOAD-BALANCING: insert rules in the switch");
                 Vector<OFAction> actions = new Vector<OFAction>();
                 short actLen = 0;
-                
+
                 if (switchDstAddr) {
                     actions.add(new OFActionDataLayerDestination(Ethernet.toByteArray(destMac.longValue())));
                     actLen += OFActionDataLayer.MINIMUM_LENGTH;
-                    
                     actions.add(new OFActionNetworkLayerDestination(destIp));
                     actLen += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
                 }
-                
                 if (switchSrcAddr) {
                     actions.add(new OFActionDataLayerSource(Ethernet.toByteArray(sourceMac.longValue())));
                     actLen += OFActionDataLayer.MINIMUM_LENGTH;
-                    
                     actions.add(new OFActionNetworkLayerSource(srcIp));
                     actLen += OFActionNetworkLayerAddress.MINIMUM_LENGTH;
                 }
-                
                 actions.add(new OFActionOutput(outPort, (short) 0xffff));
                 actLen += OFActionOutput.MINIMUM_LENGTH;
-
-                /* send to the correct port */
-                writeFlowMod(
-                    sw,
-                    OFFlowMod.OFPFC_ADD,
-                    pi.getBufferId(),
-                    match,
-                    outPort.shortValue(),
-                    Hw1Switch.PRIORITY_DEFAULT,
-                    actions.subList(0, actions.size()),
-                    actLen);
+                writeFlowMod(sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort.shortValue(), Hw1Switch.PRIORITY_DEFAULT, actions.subList(0, actions.size()), actLen);
             }
         }
-
         return Command.CONTINUE;
     }
 
@@ -635,7 +580,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             return Command.CONTINUE;
 
         if (flowRemovedMessage.getReason() == OFFlowRemoved.OFFlowRemovedReason.OFPRR_DELETE) {
-            log.error("[@lfred] flow removed successfully.");
+            log.info("[@lfred] flow removed successfully.");
             return Command.CONTINUE;
         }
 
@@ -643,24 +588,43 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         Long sourceMac = Ethernet.toLong(flowRemovedMessage.getMatch().getDataLayerSource());
         Long destMac = Ethernet.toLong(flowRemovedMessage.getMatch().getDataLayerDestination());
 
-        log.error("[@lfred] processFlowRemovedMessage : " +
-                  Long.toHexString(sourceMac.longValue()) + ":" +
-                  Long.toHexString(destMac.longValue()));
+        log.info("[@lfred] processFlowRemovedMessage : " +
+                 Long.toHexString(sourceMac.longValue()) + ":" +
+                 Long.toHexString(destMac.longValue()));
 
         if (log.isTraceEnabled())
             log.trace("{} flow entry removed {}", sw, flowRemovedMessage);
 
+        /**********************************************************************/
+        /*                         Aging the BL                               */
+        /**********************************************************************/
         /* updating & aging the black list */
         agingBlackList(now);
 
+        /**********************************************************************/
+        /*                         decrement Lnk Cnt                          */
+        /**********************************************************************/
         /* reduce the link counter */
         Map<Long, Long> cnt = m_hostConnCnt.get(sourceMac);
 
-        if (cnt != null)
-            cnt.remove(Long.valueOf(destMac));
-        else
-            log.error("[@lfred] asynchronous - ignored");
+        if (cnt != null) {
+            if (cnt.get(destMac) != null) {
+                long c = cnt.get(destMac).longValue();
+                
+                if (c == 1)
+                    cnt.remove(destMac);
+                else
+                    cnt.put(destMac, Long.valueOf(c - 1));
+                
+                if (cnt.isEmpty()) 
+                    m_hostConnCnt.remove(sourceMac);
+            }
+        } else
+            log.info("[@lfred] asynchronous - ignored");
 
+        /**********************************************************************/
+        /*                       elephant flow handling                       */
+        /**********************************************************************/
         /* get the number of bytes of this flow */
         long totalByteCount = flowRemovedMessage.getByteCount();
         Map<Long, Long> elephantCnt = m_elephantFlowCnt.get(sw);
@@ -668,7 +632,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         /* one elephant flow is found */
         if (totalByteCount > ELEPHANT_FLOW_BAND_WIDTH * HARD_TIMEOUT_DEFAULT) {
 
-            log.error("[@lfred] elephant flow found: total byte: " + totalByteCount);
+            log.info("[@lfred] elephant flow found: total byte: " + totalByteCount);
 
             if (elephantCnt == null) {
                 /* the sourceMac has not yet been dtected */
@@ -677,8 +641,12 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                         new LRULinkedHashMap<Long, Long>(MAX_MACS_PER_SWITCH));
 
                 m_elephantFlowCnt.put(sw, elephantCnt);
-            } else {
-                /* aging the flow table - remove the bad flows */
+            }
+
+            /* Maybe we should not do aging ? */
+            /*
+            else {
+                // aging the flow table - remove the bad flows
                 java.util.Iterator<Map.Entry<Long, Long>> iter = elephantCnt.entrySet().iterator();
 
                 while (iter.hasNext()) {
@@ -688,6 +656,7 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                     }
                 }
             }
+            */
 
             /* record the elephant flow */
             elephantCnt.put(sourceMac, Long.valueOf(now));
@@ -695,11 +664,15 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
             /* check if we need to block bad guys */
             if (elephantCnt.size() > MAX_ELEPHANT_FLOW_NUMBER) {
 
-                log.error("[@lfred] elephant flow count reached");
+                log.info("[@lfred] elephant flow count reached");
 
+                /* block all host */
                 for (Map.Entry<Long, Long> entry : elephantCnt.entrySet()) {
                     blockHost(entry.getKey().longValue(), now);
                 }
+
+                /* clear all entries - because they are punished already. */
+                elephantCnt.clear();
             }
 
             /* record the elephant flow if going to the web servers */
@@ -707,8 +680,8 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
                 m_svrStats.put(
                     destMac,
                     Long.valueOf(m_svrStats.get(destMac).longValue() + 1));
-                    
-                log.error("[@lfred] Update web server load: " + destMac + ":" + m_svrStats.get(destMac));
+
+                log.info("[@lfred] Update web server load: " + destMac + ":" + m_svrStats.get(destMac));
             }
         }
 
@@ -817,40 +790,38 @@ public class Hw1Switch implements IFloodlightModule, IOFMessageListener {
         long minMac = Long.MAX_VALUE;
 
         for (Map.Entry<Long, Long> entry : m_svrStats.entrySet()) {
-            
-            log.error("   [@lfred] svr loading " + entry.getKey() + ":" + entry.getValue());
-            
+
+            log.info("   [@lfred] svr loading " + entry.getKey() + ":" + entry.getValue());
+
             if (entry.getValue().longValue() < minLoad) {
                 minLoad = entry.getValue().longValue();
                 minMac = entry.getKey().longValue();
             }
         }
 
-        log.error("[@lfred] the machine with min loading is " + minMac);
+        log.info("[@lfred] the machine with min loading is " + minMac);
         return minMac;
     }
-    
-    protected long isAddrWebSvr (int ip) {
-        
+
+    /* @lfred: check if an specific ip is one of the web server */
+    protected long isAddrWebSvr(int ip) {
+
         for (Map.Entry<Long, Integer> entry : m_webSvr.entrySet()) {
-            
-            if (entry.getValue().intValue () == ip) {
+
+            if (entry.getValue().intValue() == ip) {
                 return entry.getKey().longValue();
             }
         }
-        
+
         return -1;
     }
 
     /* @lfred: the function is used to initialize the web server addressed and accounts */
     protected void initWebSvrs() {
-
-        /* @lfred: need to manually fill-in */
+        SvrLoadBalance = false;
         m_webSvrIp = IPv4.toIPv4Address(new String("10.0.0.1"));
-
         m_webSvr.put(Long.valueOf(1), IPv4.toIPv4Address(new String("10.0.0.1")));
         m_webSvr.put(Long.valueOf(2), IPv4.toIPv4Address(new String("10.0.0.2")));
-        
         m_svrStats.put(Long.valueOf(1), Long.valueOf(0));
         m_svrStats.put(Long.valueOf(2), Long.valueOf(0));
     }
